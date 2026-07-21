@@ -385,14 +385,149 @@ async function runFlightChecks() {
                 }
               });
             }
+          } else if (airline.id === 'sepehran' || airline.systemType === 'sepehran') {
+            const $ = cheerio.load(html);
+            
+            // Helper to convert Persian/Arabic digits to English digits
+            const toEnglishDigits = (str: string) => {
+              return str
+                .replace(/[۰-۹]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1776))
+                .replace(/[٠-٩]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1632));
+            };
+
+            const flightBlocks = $('[data-test="reservePlace"]');
+            
+            if (flightBlocks.length > 0) {
+              flightBlocks.each((i, block) => {
+                const blockEl = $(block);
+                
+                // 1. Time extraction: expect strings like 12:00, 23:00, etc.
+                const times: string[] = [];
+                blockEl.find('*').each((_, el) => {
+                  const t = $(el).text().trim();
+                  if (/^\d{2}:\d{2}$/.test(t)) {
+                    times.push(t);
+                  }
+                });
+                const departureTime = times[0] || 'نامعلوم';
+                
+                // 2. Flight Number: Look for 3-4 digits number in elements, or in the whole block
+                let flightNo = '';
+                blockEl.find('p, span, div').each((_, el) => {
+                  const text = $(el).text().trim();
+                  if (/^\d{3,4}$/.test(text)) {
+                    flightNo = 'IS-' + text;
+                  }
+                });
+                
+                if (!flightNo) {
+                  const match = blockEl.text().match(/\b\d{3,4}\b/);
+                  if (match) {
+                    flightNo = 'IS-' + match[0];
+                  } else {
+                    flightNo = 'IS-' + (4000 + i);
+                  }
+                }
+                
+                // 3. Capacity / Seats extraction: Search for text containing "صندلی" or "ظرفیت"
+                let capacity = 0;
+                blockEl.find('p, span, div').each((_, el) => {
+                  const text = $(el).text().trim();
+                  const converted = toEnglishDigits(text);
+                  if (converted.includes('صندلی') || converted.includes('ظرفیت') || converted.includes('صندلى')) {
+                    const capMatch = converted.match(/(\d+)/);
+                    if (capMatch) {
+                      capacity = parseInt(capMatch[1], 10);
+                    } else if (converted.includes('جا دارد') || converted.includes('موجود')) {
+                      capacity = 4;
+                    }
+                  }
+                });
+                
+                if (capacity === 0) {
+                  const blockText = toEnglishDigits(blockEl.text());
+                  const capMatch = blockText.match(/(\d+)\s*(?:صندلی|ظرفیت)/) || blockText.match(/(?:صندلی|ظرفیت)\s*[:\s]*(\d+)/);
+                  if (capMatch) {
+                    capacity = parseInt(capMatch[1], 10);
+                  }
+                }
+                
+                // 4. Price extraction: Look for text containing "تومان" or "ریال"
+                let price = 0;
+                blockEl.find('p, span, div').each((_, el) => {
+                  const text = $(el).text().trim();
+                  const cleanText = text.replace(/٬/g, '').replace(/,/g, '');
+                  const converted = toEnglishDigits(cleanText);
+                  if (converted.includes('تومان') || converted.includes('ریال')) {
+                    const priceMatch = converted.match(/(\d+)/);
+                    if (priceMatch) {
+                      price = parseInt(priceMatch[1], 10);
+                      if (converted.includes('ریال')) {
+                        price = Math.floor(price / 10);
+                      }
+                    }
+                  }
+                });
+
+                if (capacity > 0) {
+                  flights.push({
+                    airlineId: airline.id,
+                    airlineName: airline.nameFa,
+                    flightNumber: flightNo,
+                    departureTime,
+                    dateGregorian,
+                    origin: config.origin,
+                    destination: config.destination,
+                    capacity,
+                    price: price || undefined,
+                    link,
+                  });
+                }
+              });
+            } else {
+              // Fallback if data-test="reservePlace" is not found on the page
+              $('div, tr, section').each((i, el) => {
+                const text = $(el).text();
+                if (text.length < 800) {
+                  const converted = toEnglishDigits(text);
+                  const timeMatch = converted.match(/(\d{2}:\d{2})/);
+                  const capMatch = converted.match(/(\d+)\s*(?:صندلی|ظرفیت)/) || converted.match(/(?:صندلی|ظرفیت)\s*[:\s]*(\d+)/);
+                  
+                  if (timeMatch && (capMatch || converted.includes('صندلی') || converted.includes('ظرفیت'))) {
+                    const capacity = capMatch ? parseInt(capMatch[1], 10) : 4;
+                    if (capacity > 0) {
+                      flights.push({
+                        airlineId: airline.id,
+                        airlineName: airline.nameFa,
+                        flightNumber: 'IS-' + (4000 + i),
+                        departureTime: timeMatch[0],
+                        dateGregorian,
+                        origin: config.origin,
+                        destination: config.destination,
+                        capacity,
+                        link,
+                      });
+                    }
+                  }
+                }
+              });
+            }
           } else {
             const $ = cheerio.load(html);
             
+            // Helper to convert Persian/Arabic digits to English digits
+            const toEnglishDigits = (str: string) => {
+              return str
+                .replace(/[۰-۹]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1776))
+                .replace(/[٠-٩]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1632));
+            };
+
             $('div, tr, section').each((i, el) => {
               const text = $(el).text();
-              if (text.length < 500 && (text.includes('پرواز') || text.includes('ریال') || text.includes('تومان')) && (text.includes('ظرفیت') || text.includes('صندلی'))) {
-                const timeMatch = text.match(/(\d{2}:\d{2})/);
-                const capMatch = text.match(/(?:ظرفیت|صندلی)\s*[:\s]*(\d+)/);
+              const converted = toEnglishDigits(text);
+              if (text.length < 500 && (converted.includes('پرواز') || converted.includes('ریال') || converted.includes('تومان')) && (converted.includes('ظرفیت') || converted.includes('صندلی'))) {
+                const timeMatch = converted.match(/(\d{2}:\d{2})/);
+                const capMatch = converted.match(/(?:ظرفیت|صندلی)\s*[:\s]*(\d+)/);
                 if (timeMatch) {
                   const capacity = capMatch ? parseInt(capMatch[1], 10) : 0;
                   if (capacity > 0) {
