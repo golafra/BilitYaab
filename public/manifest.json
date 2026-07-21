@@ -1,0 +1,18 @@
+{
+  "name": "Flight Monitor",
+  "short_name": "Flight Monitor",
+  "description": "سیستم هوشمند پایش و هشدار پروازهای تهران-نجف",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}

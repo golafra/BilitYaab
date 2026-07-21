@@ -1,0 +1,34 @@
+{
+  "origin": "IKA",
+  "destination": "NJF",
+  "departureDateGregorian": "2026-07-25",
+  "departureDates": [
+    "2026-07-25",
+    "2026-07-26"
+  ],
+  "minSeatsRequired": 3,
+  "checkIntervalMinutes": 1,
+  "baleToken": "2061557591:tZCV9Z_TvXxLwyCmtngDkHKuA-Z4Vf6u4Zw",
+  "baleChatId": "6419738690",
+  "isMonitoring": true,
+  "useSimulationMode": false,
+  "proxyUrl": "https://208.ir/ali/p.php?token=MySecretToken123&url=",
+  "enabledAirlines": [
+    "iranair",
+    "sepehran",
+    "zagros",
+    "kish",
+    "qeshm",
+    "taban",
+    "aseman",
+    "mahan",
+    "iranairtour",
+    "ata",
+    "meraj",
+    "varesh",
+    "caspian",
+    "saha",
+    "karun",
+    "pars"
+  ]
+}

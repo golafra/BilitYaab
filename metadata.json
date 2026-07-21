@@ -1,0 +1,6 @@
+{
+  "name": "Flight Monitor",
+  "description": "A dynamic flight monitoring system for Tehran-Najaf flights with Bale messenger alerts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
