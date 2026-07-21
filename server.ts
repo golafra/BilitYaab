@@ -14,8 +14,85 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ALL_AIRLINES, getAirlineUrl } from './src/airlinesData.js';
 import { AppConfig, FlightInfo, ScrapeLogEntry, ServerStatus } from './src/types.js';
 import { getJalaliFromGregorianString } from './src/dateUtils.js';
+import puppeteer from 'puppeteer';
 
 dotenv.config();
+
+// Helper to scrape dynamic pages using a headless browser (Puppeteer)
+async function fetchHtmlWithBrowser(url: string, proxyUrl?: string): Promise<{ html: string; usedBrowser: boolean; logMessage: string }> {
+  let browser;
+  try {
+    const args = [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled'
+    ];
+
+    // Standard proxy configurations
+    if (proxyUrl && !proxyUrl.includes('?url=') && !proxyUrl.includes('&url=')) {
+      args.push(`--proxy-server=${proxyUrl}`);
+    }
+
+    browser = await puppeteer.launch({
+      headless: true,
+      args,
+    });
+
+    const page = await browser.newPage();
+    
+    // Set standard desktop dimensions and user agent to bypass simple bot protection
+    await page.setViewport({ width: 1366, height: 768 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    // Opt-out of automation headers
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+
+    // Speed up loading by blocking heavy non-essential assets
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const type = req.resourceType();
+      if (type === 'image' || type === 'media' || type === 'font') {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    console.log(`[Puppeteer] Opening URL: ${url}`);
+    await page.goto(url, {
+      waitUntil: 'networkidle2',
+      timeout: 25000,
+    });
+
+    // Wait for the dynamic airline page to load (Sepehran, Zagros etc. use next.js/react)
+    // Wait for either the search layout to load, or wait 4.5 seconds for complete AJAX hydration
+    await new Promise((resolve) => setTimeout(resolve, 4500));
+
+    const html = await page.content();
+    await browser.close();
+
+    return {
+      html,
+      usedBrowser: true,
+      logMessage: 'با موفقیت توسط مرورگر هوشمند بارگذاری شد (کاملاً رندر شده)'
+    };
+  } catch (err: any) {
+    console.warn(`[Puppeteer Error] Failed to fetch with browser: ${err.message}. Falling back to standard HTTP...`);
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {}
+    }
+    return {
+      html: '',
+      usedBrowser: false,
+      logMessage: `عدم لود با مرورگر (${err.message}) - در حال تلاش با متد ساده HTTP...`
+    };
+  }
+}
 
 const getFilename = () => {
   try {
@@ -272,9 +349,9 @@ async function runFlightChecks() {
           }
         } else {
           // --- REAL SCRAPING MODE ---
-          addLog(airline.id, airline.nameFa, true, `[${dateShamsi}] در حال تلاش برای برقراری ارتباط واقعی با سایت ایرلاین...`, 0);
+          addLog(airline.id, airline.nameFa, true, `[${dateShamsi}] شروع تلاش برای مانیتورینگ سایت ایرلاین...`, 0);
 
-          // Build request headers to look like a real browser
+          // Build request headers to look like a real browser (for fallback)
           const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
@@ -306,21 +383,33 @@ async function runFlightChecks() {
             }
           }
 
-          let response: any;
-          try {
-            response = await axios.get(finalLink, options);
-          } catch (fetchErr: any) {
-            throw new Error(`خطای ارتباطی یا اتمام زمان (Timeout): ${fetchErr.message}`);
-          }
+          let html = '';
+          const browserResult = await fetchHtmlWithBrowser(finalLink, config.proxyUrl);
 
-          if (response.status !== 200) {
-            if (response.status === 403) {
-              throw new Error(`خطای ۴۰۳ عدم دسترسی (احتمالاً به دلیل مسدود بودن IP خارجی سرور توسط ایرلاین ایرانی. لطفاً از شبیه‌ساز یا پروکسی ایران در تنظیمات استفاده کنید)`);
+          if (browserResult.usedBrowser) {
+            html = browserResult.html;
+            addLog(airline.id, airline.nameFa, true, `[${dateShamsi}] ${browserResult.logMessage}`, 0);
+          } else {
+            // Fallback to Axios HTTP request
+            addLog(airline.id, airline.nameFa, true, `[${dateShamsi}] ${browserResult.logMessage}`, 0);
+
+            let response: any;
+            try {
+              response = await axios.get(finalLink, options);
+            } catch (fetchErr: any) {
+              throw new Error(`خطای ارتباطی یا اتمام زمان (Timeout): ${fetchErr.message}`);
             }
-            throw new Error(`سایت ایرلاین خطای وضعیت ${response.status} بازگرداند.`);
+
+            if (response.status !== 200) {
+              if (response.status === 403) {
+                throw new Error(`خطای ۴۰۳ عدم دسترسی (احتمالاً به دلیل مسدود بودن IP خارجی سرور توسط ایرلاین ایرانی. لطفاً از شبیه‌ساز یا پروکسی ایران در تنظیمات استفاده کنید)`);
+              }
+              throw new Error(`سایت ایرلاین خطای وضعیت ${response.status} بازگرداند.`);
+            }
+
+            html = response.data;
           }
 
-          const html = response.data;
           const flights: FlightInfo[] = [];
 
           // Parse using Cheerio based on system type
