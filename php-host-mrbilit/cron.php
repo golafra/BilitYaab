@@ -30,6 +30,7 @@ $debug = !$isCli && isset($_GET['debug']) && (string) $_GET['debug'] === '1';
 $resetState = !$isCli && isset($_GET['reset']) && (string) $_GET['reset'] === '1';
 $testBale = !$isCli && isset($_GET['test_bale']) && (string) $_GET['test_bale'] === '1';
 
+require_once __DIR__ . '/lib/polyfill.php';
 require_once __DIR__ . '/lib/MrBilitClient.php';
 require_once __DIR__ . '/lib/BaleNotifier.php';
 require_once __DIR__ . '/lib/StateStore.php';
@@ -38,23 +39,37 @@ $baleVerifySsl = !isset($config['bale_verify_ssl']) || $config['bale_verify_ssl'
 
 if ($testBale) {
     header('Content-Type: application/json; charset=utf-8');
-    $test = BaleNotifier::sendTest(
-        (string) ($config['bale_token'] ?? ''),
-        (string) ($config['bale_chat_id'] ?? ''),
-        $baleVerifySsl
-    );
-    if (!$test['ok'] && $baleVerifySsl) {
-        $retry = BaleNotifier::sendTest(
-            (string) ($config['bale_token'] ?? ''),
-            (string) ($config['bale_chat_id'] ?? ''),
-            false
-        );
-        $test = [
-            'ok' => $retry['ok'],
-            'message' => $test['message'] . ' | retry_ssl_off: ' . $retry['message'],
-        ];
+    $token = (string) ($config['bale_token'] ?? '');
+    $chatId = (string) ($config['bale_chat_id'] ?? '');
+    $getMe = BaleNotifier::getMe($token, $baleVerifySsl);
+    $send = ['ok' => false, 'message' => 'send رد شد چون getMe ناموفق بود'];
+    if ($getMe['ok']) {
+        $send = BaleNotifier::sendTest($token, $chatId, $baleVerifySsl);
+        if (!$send['ok'] && $baleVerifySsl) {
+            $sendRetry = BaleNotifier::sendTest($token, $chatId, false);
+            $send['message'] .= ' | retry_ssl_off: ' . $sendRetry['message'];
+            $send['ok'] = $sendRetry['ok'];
+        }
+    } elseif ($baleVerifySsl) {
+        $getMeSslOff = BaleNotifier::getMe($token, false);
+        if ($getMeSslOff['ok']) {
+            $getMe = $getMeSslOff;
+            $getMe['message'] .= ' (با bale_verify_ssl=false)';
+            $send = BaleNotifier::sendTest($token, $chatId, false);
+        }
     }
-    echo json_encode($test, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    echo json_encode(
+        [
+            'php_version' => PHP_VERSION,
+            'curl_enabled' => function_exists('curl_init'),
+            'chat_id_config' => $chatId,
+            'getMe' => $getMe,
+            'send_test' => $send,
+            'hint_unauthorized' => 'اگر getMe HTTP 401 است، توکن را از پنل بله دوباره کپی کنید (بدون فاصله). سپس به همان ربات /start بزنید.',
+            'hint_chat_id' => 'chat_id باید از getUpdates بعد از /start باشد، نه عدد اول توکن.',
+        ],
+        JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT
+    );
     exit;
 }
 
@@ -162,7 +177,6 @@ foreach ($dates as $dateGregorian) {
             (string) ($config['bale_token'] ?? ''),
             (string) ($config['bale_chat_id'] ?? ''),
             $msg,
-            $offer,
             $baleVerifySsl
         );
         if ($sent['ok']) {

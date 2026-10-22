@@ -216,7 +216,6 @@ async function sendBaleMessage(token: string, chatId: string, text: string): Pro
       body: JSON.stringify({
         chat_id: chatId,
         text: text,
-        parse_mode: 'HTML',
       }),
     });
 
@@ -235,34 +234,36 @@ async function sendBaleMessage(token: string, chatId: string, text: string): Pro
 function formatBaleMessage(flight: FlightInfo, link: string): string {
   const flightDate = flight.dateGregorian || config.departureDateGregorian;
   const dateShamsi = getJalaliFromGregorianString(flightDate);
-  return `✈️ <b>ظرفیت پرواز ${config.origin} به ${config.destination} باز شد!</b>
+  return `✈️ ظرفیت پرواز ${config.origin} به ${config.destination} باز شد!
 
-🏢 <b>ایرلاین:</b> ${flight.airlineName}
-🔢 <b>شماره پرواز:</b> ${flight.flightNumber || 'نامعلوم'}
-⏰ <b>ساعت پرواز:</b> ${flight.departureTime}
-📅 <b>تاریخ:</b> ${dateShamsi} (${flightDate})
-💺 <b>ظرفیت خالی:</b> ${flight.capacity} صندلی
+🏢 ایرلاین: ${flight.airlineName}
+🔢 شماره پرواز: ${flight.flightNumber || 'نامعلوم'}
+⏰ ساعت پرواز: ${flight.departureTime}
+📅 تاریخ: ${dateShamsi} (${flightDate})
+💺 ظرفیت خالی: ${flight.capacity} صندلی
 
-🔗 <a href="${link}">جهت رزرو و خرید کلیک کنید</a>
+🔗 رزرو و خرید:
+${link}
 
-🔔 <i>بلیط‌یاب</i>`;
+🔔 بلیط‌یاب`;
 }
 
 function formatBaleTrainMessage(offer: TrainClassOffer): string {
   const dateShamsi = getJalaliFromGregorianString(offer.dateGregorian);
-  return `🚆 <b>ظرفیت قطار ${offer.originName} به ${offer.destinationName} باز شد!</b>
+  return `🚆 ظرفیت قطار ${offer.originName} به ${offer.destinationName} باز شد!
 
-🏢 <b>شرکت:</b> ${offer.company}
-🔢 <b>شماره قطار:</b> ${offer.trainNumber}
-🛏 <b>واگن:</b> ${offer.wagonName}${offer.compartmentType ? ` (${offer.compartmentType})` : ''}
-⏰ <b>حرکت:</b> ${offer.departureTime} — <b>رسیدن:</b> ${offer.arrivalTime}
-📅 <b>تاریخ:</b> ${dateShamsi} (${offer.dateGregorian})
-💺 <b>صندلی خالی:</b> ${offer.capacity}
-💰 <b>قیمت (تومان):</b> ${offer.priceToman.toLocaleString('fa-IR')}
+🏢 شرکت: ${offer.company}
+🔢 شماره قطار: ${offer.trainNumber}
+🛏 واگن: ${offer.wagonName}${offer.compartmentType ? ` (${offer.compartmentType})` : ''}
+⏰ حرکت: ${offer.departureTime} — رسیدن: ${offer.arrivalTime}
+📅 تاریخ: ${dateShamsi} (${offer.dateGregorian})
+💺 صندلی خالی: ${offer.capacity}
+💰 قیمت (تومان): ${offer.priceToman.toLocaleString('fa-IR')}
 
-🔗 <a href="${offer.buyLink}">رزرو در مستربلیط</a>
+🔗 رزرو در مستربلیط:
+${offer.buyLink}
 
-🔔 <i>بلیط‌یاب</i>`;
+🔔 بلیط‌یاب`;
 }
 
 function sleep(ms: number): Promise<void> {

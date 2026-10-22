@@ -12,7 +12,7 @@
    - `departure_dates` — تاریخ حرکت **میلادی** (`2026-11-15`)
    - `bale_token` و `bale_chat_id`
    - در صورت نیاز `min_seats`، `max_price_toman` (۰ = بدون سقف) و `quota`
-4. مطمئن شوید PHP 8.1+ و `allow_url_fopen=On` (یا curl فعال) برای درخواست HTTPS باشد.
+4. مطمئن شوید **PHP 7.4+** (ترجیحاً 8.x) و **cURL** یا `allow_url_fopen=On` برای HTTPS فعال باشد.
 
 ## cron هر ۱ دقیقه
 

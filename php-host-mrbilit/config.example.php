@@ -28,6 +28,7 @@ return [
     'bale_chat_id' => '',
 
     // اگر خطای SSL/اتصال به tapi.bale.ai دارید، false کنید (هاست‌های ایرانی گاهاً CA ندارند)
+    // روی هاست 208.ir اگر ارسال نشد، true بماند؛ در صورت خطای SSL امتحان کنید false
     'bale_verify_ssl' => true,
 
     /**

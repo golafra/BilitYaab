@@ -2,49 +2,68 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/polyfill.php';
 require_once __DIR__ . '/Jalali.php';
 require_once __DIR__ . '/HttpClient.php';
 
 final class BaleNotifier
 {
     /**
+     * پیام بدون HTML — کلاینت بله تگ‌های HTML را اغلب خام نشان می‌دهد.
+     *
      * @param array<string, mixed> $offer
      */
     public static function formatTrainMessage(array $offer): string
     {
         $dateGregorian = (string) ($offer['date_gregorian'] ?? '');
         $dateShamsi = format_jalali_fa($dateGregorian);
-        $wagon = htmlspecialchars((string) ($offer['wagon_name'] ?? ''), ENT_QUOTES, 'UTF-8');
+        $wagon = (string) ($offer['wagon_name'] ?? '');
         $comp = (string) ($offer['compartment_type'] ?? '');
-        $wagonLine = $wagon . ($comp !== '' ? ' (' . htmlspecialchars($comp, ENT_QUOTES, 'UTF-8') . ')' : '');
-        $link = htmlspecialchars((string) ($offer['buy_link'] ?? ''), ENT_QUOTES, 'UTF-8');
+        $wagonLine = $wagon . ($comp !== '' ? ' (' . $comp . ')' : '');
+        $link = (string) ($offer['buy_link'] ?? '');
         $price = number_format((int) ($offer['price_toman'] ?? 0));
 
-        return "🚆 <b>ظرفیت قطار باز شد!</b>\n\n"
-            . '🏢 <b>شرکت:</b> ' . htmlspecialchars((string) ($offer['company'] ?? ''), ENT_QUOTES, 'UTF-8') . "\n"
-            . '🔢 <b>شماره قطار:</b> ' . htmlspecialchars((string) ($offer['train_number'] ?? ''), ENT_QUOTES, 'UTF-8') . "\n"
-            . "🛏 <b>واگن:</b> {$wagonLine}\n"
-            . '⏰ <b>حرکت:</b> ' . htmlspecialchars((string) ($offer['departure_time'] ?? ''), ENT_QUOTES, 'UTF-8')
-            . ' — <b>رسیدن:</b> ' . htmlspecialchars((string) ($offer['arrival_time'] ?? ''), ENT_QUOTES, 'UTF-8') . "\n"
-            . "📅 <b>تاریخ:</b> {$dateShamsi} ({$dateGregorian})\n"
-            . '💺 <b>صندلی خالی:</b> ' . (int) ($offer['capacity'] ?? 0) . "\n"
-            . "💰 <b>قیمت (تومان):</b> {$price}\n\n"
-            . "🔗 <a href=\"{$link}\">رزرو در مستربلیط</a>\n\n"
-            . '🔔 <i>پایش قطار (هاست PHP)</i>';
+        return "🚆 ظرفیت قطار باز شد!\n\n"
+            . '🏢 شرکت: ' . ($offer['company'] ?? '') . "\n"
+            . '🔢 شماره قطار: ' . ($offer['train_number'] ?? '') . "\n"
+            . "🛏 واگن: {$wagonLine}\n"
+            . '⏰ حرکت: ' . ($offer['departure_time'] ?? '')
+            . ' — رسیدن: ' . ($offer['arrival_time'] ?? '') . "\n"
+            . "📅 تاریخ: {$dateShamsi} ({$dateGregorian})\n"
+            . '💺 صندلی خالی: ' . (int) ($offer['capacity'] ?? 0) . "\n"
+            . "💰 قیمت (تومان): {$price}\n\n"
+            . "🔗 رزرو در مستربلیط:\n{$link}\n\n"
+            . '🔔 پایش قطار (هاست PHP)';
     }
 
-    public static function formatTrainMessagePlain(array $offer): string
+    /**
+     * @return array{ok: bool, message: string, username?: string|null}
+     */
+    public static function getMe(string $token, bool $verifySsl = true): array
     {
-        $dateGregorian = (string) ($offer['date_gregorian'] ?? '');
-        $dateShamsi = format_jalali_fa($dateGregorian);
-        return "ظرفیت قطار باز شد\n"
-            . 'شرکت: ' . ($offer['company'] ?? '') . "\n"
-            . 'قطار: ' . ($offer['train_number'] ?? '') . "\n"
-            . 'واگن: ' . ($offer['wagon_name'] ?? '') . "\n"
-            . "تاریخ: {$dateShamsi}\n"
-            . 'صندلی: ' . (int) ($offer['capacity'] ?? 0) . "\n"
-            . 'قیمت تومان: ' . (int) ($offer['price_toman'] ?? 0) . "\n"
-            . ($offer['buy_link'] ?? '');
+        $token = self::normalizeToken($token);
+        if ($token === '') {
+            return ['ok' => false, 'message' => 'توکن خالی است'];
+        }
+        $url = 'https://tapi.bale.ai/bot' . $token . '/getMe';
+        $res = HttpClient::get($url, ['Accept: application/json'], 20, $verifySsl);
+        if ($res['body'] === false) {
+            return ['ok' => false, 'message' => 'getMe اتصال ناموفق: ' . ($res['error'] ?? '')];
+        }
+        $data = json_decode($res['body'], true);
+        if (is_array($data) && !empty($data['ok']) && is_array($data['result'] ?? null)) {
+            $username = (string) ($data['result']['username'] ?? '');
+            return [
+                'ok' => true,
+                'message' => 'توکن معتبر (@' . $username . ')',
+                'username' => $username,
+            ];
+        }
+        $desc = is_array($data) ? (string) ($data['description'] ?? 'نامعتبر') : substr((string) $res['body'], 0, 200);
+        return [
+            'ok' => false,
+            'message' => 'getMe HTTP ' . $res['status'] . ': ' . $desc,
+        ];
     }
 
     /**
@@ -52,55 +71,26 @@ final class BaleNotifier
      */
     public static function sendTest(string $token, string $chatId, bool $verifySsl = true): array
     {
-        return self::sendRaw($token, $chatId, '✅ تست ارسال از پایش قطار (هاست PHP)', null, $verifySsl);
-    }
-
-    /**
-     * @param array<string, mixed>|null $offer برای fallback متن ساده
-     * @return array{ok: bool, message: string}
-     */
-    public static function send(
-        string $token,
-        string $chatId,
-        string $text,
-        ?array $offer = null,
-        bool $verifySsl = true
-    ): array {
-        $result = self::sendRaw($token, $chatId, $text, 'HTML', $verifySsl);
-        if ($result['ok']) {
-            return $result;
-        }
-        if ($offer !== null) {
-            $plain = self::formatTrainMessagePlain($offer);
-            $fallback = self::sendRaw($token, $chatId, $plain, null, $verifySsl);
-            if ($fallback['ok']) {
-                return ['ok' => true, 'message' => 'ارسال شد (متن ساده، بدون HTML)'];
-            }
-            return [
-                'ok' => false,
-                'message' => $result['message'] . ' | fallback: ' . $fallback['message'],
-            ];
-        }
-        return $result;
+        return self::sendRaw($token, $chatId, '✅ تست ارسال از پایش قطار (هاست PHP)', $verifySsl);
     }
 
     /**
      * @return array{ok: bool, message: string}
      */
-    private static function sendRaw(
-        string $token,
-        string $chatId,
-        string $text,
-        ?string $parseMode,
-        bool $verifySsl
-    ): array {
-        $token = trim($token);
+    public static function send(string $token, string $chatId, string $text, bool $verifySsl = true): array
+    {
+        return self::sendRaw($token, $chatId, $text, $verifySsl);
+    }
+
+    /**
+     * @return array{ok: bool, message: string}
+     */
+    private static function sendRaw(string $token, string $chatId, string $text, bool $verifySsl): array
+    {
+        $token = self::normalizeToken($token);
         $chatId = trim($chatId);
         if ($token === '' || $chatId === '') {
             return ['ok' => false, 'message' => 'توکن یا chat_id بله تنظیم نشده'];
-        }
-        if (str_starts_with(strtolower($token), 'bot')) {
-            $token = substr($token, 3);
         }
 
         $url = 'https://tapi.bale.ai/bot' . $token . '/sendMessage';
@@ -108,9 +98,6 @@ final class BaleNotifier
             'chat_id' => is_numeric($chatId) ? (int) $chatId : $chatId,
             'text' => $text,
         ];
-        if ($parseMode !== null && $parseMode !== '') {
-            $payloadData['parse_mode'] = $parseMode;
-        }
         $payload = json_encode($payloadData, JSON_UNESCAPED_UNICODE);
         if ($payload === false) {
             return ['ok' => false, 'message' => 'خطا در ساخت JSON پیام'];
@@ -151,5 +138,17 @@ final class BaleNotifier
             'ok' => false,
             'message' => 'بله HTTP ' . $res['status'] . ': ' . $desc,
         ];
+    }
+
+    private static function normalizeToken(string $token): string
+    {
+        $token = trim($token);
+        if ($token === '') {
+            return '';
+        }
+        if (str_starts_with(strtolower($token), 'bot')) {
+            $token = substr($token, 3);
+        }
+        return $token;
     }
 }
