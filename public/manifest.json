@@ -1,7 +1,7 @@
 {
-  "name": "Flight Monitor",
-  "short_name": "Flight Monitor",
-  "description": "سیستم هوشمند پایش و هشدار پروازهای تهران-نجف",
+  "name": "بلیط‌یاب",
+  "short_name": "بلیط‌یاب",
+  "description": "پایش هوشمند ظرفیت بلیط پرواز و هشدار در پیام‌رسان بله",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f172a",

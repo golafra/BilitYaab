@@ -1,6 +1,6 @@
 {
-  "name": "Flight Monitor",
-  "description": "A dynamic flight monitoring system for Tehran-Najaf flights with Bale messenger alerts.",
+  "name": "BilitYaab",
+  "description": "بلیط‌یاب — سامانه پایش و هشدار بلیط پرواز با اطلاع‌رسانی در پیام‌رسان بله.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

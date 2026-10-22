@@ -253,10 +253,10 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold bg-gradient-to-r from-white via-slate-100 to-cyan-400 bg-clip-text text-transparent">
-                ملخ هوشمند پرواز تهران نجف
+                بلیط‌یاب
               </h1>
               <p className="text-xs text-slate-400 mt-0.5">
-                سیستم خودکار رصد و اطلاع‌رسانی بلیط‌های خالی در پیام‌رسان بله
+                پایش خودکار ظرفیت بلیط پرواز و اطلاع‌رسانی در پیام‌رسان بله
               </p>
             </div>
           </div>
@@ -871,7 +871,7 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950 py-8 mt-12 relative z-10 text-center">
         <div className="max-w-7xl mx-auto px-4 text-slate-500 text-xs leading-relaxed">
-          <p>سیستم پایش هوشمند رزرو پروازهای زیارتی تهران - نجف</p>
+          <p>بلیط‌یاب — پایش هوشمند ظرفیت بلیط پرواز</p>
           <p className="mt-1">صرفاً جهت اطلاع‌رسانی باز شدن ظرفیت‌ها در پیام‌رسان بله. طراحی شده با بالاترین دقت پایش و فرکانس بررسی.</p>
         </div>
       </footer>

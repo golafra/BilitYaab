@@ -202,7 +202,7 @@ async function sendBaleMessage(token: string, chatId: string, text: string): Pro
 function formatBaleMessage(flight: FlightInfo, link: string): string {
   const flightDate = flight.dateGregorian || config.departureDateGregorian;
   const dateShamsi = getJalaliFromGregorianString(flightDate);
-  return `✈️ <b>پرواز تهران به نجف باز شد!</b>
+  return `✈️ <b>ظرفیت پرواز ${config.origin} به ${config.destination} باز شد!</b>
 
 🏢 <b>ایرلاین:</b> ${flight.airlineName}
 🔢 <b>شماره پرواز:</b> ${flight.flightNumber || 'نامعلوم'}
@@ -212,7 +212,7 @@ function formatBaleMessage(flight: FlightInfo, link: string): string {
 
 🔗 <a href="${link}">جهت رزرو و خرید کلیک کنید</a>
 
-🔔 <i>ملخ هوشمند پرواز تهران نجف</i>`;
+🔔 <i>بلیط‌یاب</i>`;
 }
 
 // The core scraping checker logic
@@ -788,7 +788,7 @@ app.post('/api/test-bale', async (req, res) => {
     return res.status(400).json({ error: 'Token and Chat ID are required for testing' });
   }
 
-  const testMsg = `🔔 <b>تست ربات هوشمند بلیط بله</b>\n\nسیستم مانیتورینگ پروازهای تهران نجف با موفقیت به پیام‌رسان بله متصل شد! 🎉\n\nزمان تست: ${new Date().toLocaleTimeString('fa-IR')}`;
+  const testMsg = `🔔 <b>تست بلیط‌یاب</b>\n\nاتصال به پیام‌رسان بله با موفقیت برقرار شد! 🎉\n\nزمان تست: ${new Date().toLocaleTimeString('fa-IR')}`;
   const result = await sendBaleMessage(token, chatId, testMsg);
 
   if (result.success) {
