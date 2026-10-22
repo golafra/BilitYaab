@@ -25,9 +25,10 @@ import {
   X,
   Database
 } from 'lucide-react';
-import { AppConfig, ScrapeLogEntry, ServerStatus } from './types';
+import { AppConfig, ScrapeLogEntry, ServerStatus, TransportMode } from './types';
 import { ALL_AIRLINES, getAirlineUrl } from './airlinesData';
 import { getJalaliFromGregorianString } from './dateUtils';
+import { TRAIN_STATION_PRESETS } from './trainStations';
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig>({
@@ -43,6 +44,14 @@ export default function App() {
     useSimulationMode: false,
     proxyUrl: '',
     enabledAirlines: ['zagros', 'qeshm', 'kish', 'sepehran', 'aseman'],
+    transportMode: 'train',
+    trainOriginStationId: 1,
+    trainDestinationStationId: 191,
+    trainRouteSlug: 'tehran-mashhad',
+    trainQuota: 'general',
+    trainCheckIntervalMinutes: 5,
+    trainProvider: 'mrbilit',
+    trainFallbackToGhasedak: true,
   });
 
   const [status, setStatus] = useState<ServerStatus>({
@@ -64,7 +73,16 @@ export default function App() {
   const [saveMessage, setSaveMessage] = useState<{ success: boolean; text: string } | null>(null);
   const [selectedLog, setSelectedLog] = useState<ScrapeLogEntry | null>(null);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'settings' | 'airlines'>('dashboard');
-  const [newDateInput, setNewDateInput] = useState('2026-07-27');
+  const [newDateInput, setNewDateInput] = useState('2026-10-27');
+
+  const applyTehranMashhadTrainPreset = () => {
+    setConfig((prev) => ({
+      ...prev,
+      trainOriginStationId: 1,
+      trainDestinationStationId: 191,
+      trainRouteSlug: 'tehran-mashhad',
+    }));
+  };
 
   // Fetch initial config and status
   useEffect(() => {
@@ -309,7 +327,13 @@ export default function App() {
               {config.isMonitoring ? 'پایش لحظه‌ای فعال' : 'غیرفعال'}
             </div>
             <div className="text-xs text-slate-400 mt-1">
-              {config.useSimulationMode ? 'حالت شبیه‌سازی فعال است' : 'حالت رصد واقعی'}
+              {config.transportMode === 'train'
+                ? 'پایش قطار'
+                : config.transportMode === 'both'
+                  ? 'پرواز + قطار'
+                  : 'پایش پرواز'}
+              {' · '}
+              {config.useSimulationMode ? 'شبیه‌سازی' : 'رصد واقعی'}
             </div>
           </div>
 
@@ -350,7 +374,12 @@ export default function App() {
               )}
             </div>
             <div className="text-xs text-slate-400 mt-1">
-              {config.origin} ← {config.destination} (حداقل {config.minSeatsRequired} صندلی)
+              {config.transportMode === 'train'
+                ? `قطار: ایستگاه ${config.trainOriginStationId} → ${config.trainDestinationStationId}`
+                : config.transportMode === 'both'
+                  ? `${config.origin}→${config.destination} + قطار ${config.trainOriginStationId}→${config.trainDestinationStationId}`
+                  : `${config.origin} ← ${config.destination}`}
+              {' · '}حداقل {config.minSeatsRequired} صندلی
             </div>
           </div>
         </section>
@@ -530,9 +559,187 @@ export default function App() {
               <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-6 shadow-sm backdrop-blur-sm">
                 <h3 className="text-base font-bold mb-6 flex items-center gap-2 text-cyan-400 border-b border-slate-800 pb-3">
                   <Sliders className="w-5 h-5 text-cyan-400" />
-                  <span>پارامترهای جستجوی پرواز</span>
+                  <span>نوع پایش و پارامترها</span>
                 </h3>
 
+                <div className="mb-6">
+                  <label className="block text-xs font-semibold text-slate-400 mb-2">نوع بلیط تحت پایش</label>
+                  <div className="flex flex-wrap gap-2">
+                    {(
+                      [
+                        ['train', 'قطار (API مستربلیط)'],
+                        ['flight', 'پرواز (ایرلاین‌ها)'],
+                        ['both', 'هر دو'],
+                      ] as [TransportMode, string][]
+                    ).map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => handleConfigChange('transportMode', mode)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+                          config.transportMode === mode
+                            ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/40'
+                            : 'bg-slate-800 text-slate-400 border-transparent'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-2 leading-relaxed">
+                    برای قطار، هر دور فقط یک درخواست API به ازای هر تاریخ زده می‌شود (با فاصلهٔ حداقل ۳ دقیقه و تأخیر تصادفی) تا احتمال مسدود شدن کم شود.
+                  </p>
+                </div>
+
+                <div className="mb-6 border-b border-slate-800/80 pb-6">
+                  <label className="block text-xs font-semibold text-slate-400 mb-3">تاریخ‌های پایش</label>
+                  <div className="flex flex-wrap gap-2 mb-4 bg-slate-950/40 p-4 rounded-xl border border-slate-800">
+                    {config.departureDates && config.departureDates.length > 0 ? (
+                      config.departureDates.map((date) => (
+                        <div key={date} className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+                          <span className="font-semibold">{getJalaliFromGregorianString(date)}</span>
+                          <span className="opacity-55 font-mono">({date})</span>
+                          <button type="button" onClick={() => handleRemoveDate(date)} className="text-rose-400 hover:text-rose-300 ml-1">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-xs text-slate-500 py-1">حداقل یک تاریخ اضافه کنید.</div>
+                    )}
+                  </div>
+                  <div className="flex gap-2 max-w-md mb-4">
+                    <input
+                      type="date"
+                      value={newDateInput}
+                      onChange={(e) => setNewDateInput(e.target.value)}
+                      className="bg-slate-950/85 border border-slate-800 rounded-xl px-4 py-2 text-xs text-white flex-1 text-left"
+                    />
+                    <button type="button" onClick={handleAddDate} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold px-4 py-2 rounded-xl">
+                      افزودن تاریخ
+                    </button>
+                  </div>
+                  <label className="block text-xs font-semibold text-slate-400 mb-2">حداقل صندلی خالی برای هشدار</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={9}
+                    value={config.minSeatsRequired}
+                    onChange={(e) => handleConfigChange('minSeatsRequired', parseInt(e.target.value, 10) || 3)}
+                    className="w-full max-w-xs bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white"
+                  />
+                </div>
+
+                {(config.transportMode === 'train' || config.transportMode === 'both') && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6 border border-slate-800/80 rounded-xl p-4 bg-slate-950/30">
+                    <div className="md:col-span-2 flex items-center justify-between gap-2">
+                      <h4 className="text-sm font-bold text-emerald-400">پایش قطار (تهران–مشهد و سایر مسیرها)</h4>
+                      <button
+                        type="button"
+                        onClick={applyTehranMashhadTrainPreset}
+                        className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-lg"
+                      >
+                        پیش‌فرض تهران → مشهد
+                      </button>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-2">شناسه ایستگاه مبدا</label>
+                      <select
+                        value={config.trainOriginStationId}
+                        onChange={(e) => {
+                          const id = parseInt(e.target.value, 10);
+                          const station = Object.values(TRAIN_STATION_PRESETS).find((s) => s.id === id);
+                          const dest = Object.values(TRAIN_STATION_PRESETS).find((s) => s.id === config.trainDestinationStationId);
+                          handleConfigChange('trainOriginStationId', id);
+                          if (station && dest) {
+                            handleConfigChange('trainRouteSlug', `${station.slug}-${dest.slug}`);
+                          }
+                        }}
+                        className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white"
+                      >
+                        {Object.entries(TRAIN_STATION_PRESETS).map(([key, s]) => (
+                          <option key={key} value={s.id}>
+                            {s.nameFa} ({s.id})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-2">شناسه ایستگاه مقصد</label>
+                      <select
+                        value={config.trainDestinationStationId}
+                        onChange={(e) => {
+                          const id = parseInt(e.target.value, 10);
+                          const station = Object.values(TRAIN_STATION_PRESETS).find((s) => s.id === id);
+                          const origin = Object.values(TRAIN_STATION_PRESETS).find((s) => s.id === config.trainOriginStationId);
+                          handleConfigChange('trainDestinationStationId', id);
+                          if (station && origin) {
+                            handleConfigChange('trainRouteSlug', `${origin.slug}-${station.slug}`);
+                          }
+                        }}
+                        className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white"
+                      >
+                        {Object.entries(TRAIN_STATION_PRESETS).map(([key, s]) => (
+                          <option key={key} value={s.id}>
+                            {s.nameFa} ({s.id})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-2">سهمیه صندلی</label>
+                      <select
+                        value={config.trainQuota}
+                        onChange={(e) => handleConfigChange('trainQuota', e.target.value)}
+                        className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white"
+                      >
+                        <option value="general">عمومی / خانواده</option>
+                        <option value="men">مردانه</option>
+                        <option value="women">زنانه</option>
+                        <option value="car">حمل خودرو</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-2">منبع داده قطار</label>
+                      <select
+                        value={config.trainProvider || 'mrbilit'}
+                        onChange={(e) => handleConfigChange('trainProvider', e.target.value)}
+                        className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white"
+                      >
+                        <option value="mrbilit">مستربلیط (train.mrbilit.com)</option>
+                        <option value="flytoday">فلای‌تودی (gateway + تقویم ۱۶ روزه)</option>
+                        <option value="ghasedak">قاصدک۲۴ (search_ajax)</option>
+                        <option value="both">مستربلیط و فلای‌تودی — نوبتی</option>
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-3 md:col-span-2">
+                      <input
+                        id="trainFallbackGhasedak"
+                        type="checkbox"
+                        checked={config.trainFallbackToGhasedak !== false}
+                        onChange={(e) => handleConfigChange('trainFallbackToGhasedak', e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-cyan-500"
+                      />
+                      <label htmlFor="trainFallbackGhasedak" className="text-xs text-slate-400">
+                        اگر مستربلیط یا فلای‌تودی بلاک یا در دسترس نبود، همان تاریخ از قاصدک۲۴ هم چک شود
+                      </label>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-400 mb-2">فاصله پایش قطار (دقیقه، حداقل ۳)</label>
+                      <input
+                        type="number"
+                        min={3}
+                        value={config.trainCheckIntervalMinutes}
+                        onChange={(e) =>
+                          handleConfigChange('trainCheckIntervalMinutes', Math.max(3, parseInt(e.target.value, 10) || 5))
+                        }
+                        className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {(config.transportMode === 'flight' || config.transportMode === 'both') && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                   <div>
                     <label className="block text-xs font-semibold text-slate-400 mb-2">فرودگاه مبدا (مخفف یاتا)</label>
@@ -554,62 +761,6 @@ export default function App() {
                     />
                   </div>
 
-                  <div className="md:col-span-2 border-b border-slate-800/80 pb-6 mb-2">
-                    <label className="block text-xs font-semibold text-slate-400 mb-3">تاریخ‌های مورد نظر جهت پایش (امکان افزودن چندین تاریخ همزمان)</label>
-                    <div className="flex flex-wrap gap-2 mb-4 bg-slate-950/40 p-4 rounded-xl border border-slate-800">
-                      {config.departureDates && config.departureDates.length > 0 ? (
-                        config.departureDates.map((date) => (
-                          <div key={date} className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
-                            <span className="font-semibold">{getJalaliFromGregorianString(date)}</span>
-                            <span className="opacity-55 font-mono">({date})</span>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveDate(date)}
-                              className="text-rose-400 hover:text-rose-300 transition-all ml-1"
-                              title="حذف تاریخ"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="text-xs text-slate-500 py-1">هیچ تاریخی برای مانیتورینگ تعریف نشده است. لطفاً حداقل یک تاریخ اضافه کنید.</div>
-                      )}
-                    </div>
-
-                    <div className="flex gap-2 max-w-md">
-                      <input
-                        type="date"
-                        value={newDateInput}
-                        onChange={(e) => setNewDateInput(e.target.value)}
-                        className="bg-slate-950/85 border border-slate-800 rounded-xl px-4 py-2 text-xs font-semibold text-white focus:outline-none focus:border-cyan-500 transition-all text-left flex-1"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleAddDate}
-                        className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold px-4 py-2 rounded-xl transition-all"
-                      >
-                        افزودن تاریخ پایش
-                      </button>
-                    </div>
-                    <span className="text-[10px] text-slate-500 mt-2 block">
-                      برای پایش همزمان چندین تاریخ (مثلا ۳ و ۴ مرداد ۱۴۰۵ معادل ۲۵ و ۲۶ ژوئیه ۲۰۲۶)، تک‌تک تاریخ‌ها را انتخاب کرده و دکمه افزودن را بزنید.
-                    </span>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-2">حداقل ظرفیت خالی صندلی</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="9"
-                      value={config.minSeatsRequired}
-                      onChange={(e) => handleConfigChange('minSeatsRequired', parseInt(e.target.value, 10) || 3)}
-                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm font-semibold text-white focus:outline-none focus:border-cyan-500 transition-all"
-                    />
-                    <span className="text-[10px] text-slate-400 mt-1 block">اگر حداقل این تعداد صندلی باز شد، اطلاع بده (پیش‌فرض: ۳).</span>
-                  </div>
-
                   <div>
                     <label className="block text-xs font-semibold text-slate-400 mb-2">فاصله زمانی بررسی (دقیقه)</label>
                     <input
@@ -619,9 +770,14 @@ export default function App() {
                       onChange={(e) => handleConfigChange('checkIntervalMinutes', parseInt(e.target.value, 10) || 1)}
                       className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-sm font-semibold text-white focus:outline-none focus:border-cyan-500 transition-all"
                     />
-                    <span className="text-[10px] text-slate-400 mt-1 block">پایش سایت‌ها هر چند دقیقه یکبار تکرار شود (پیش‌فرض: ۱ دقیقه).</span>
+                    <span className="text-[10px] text-slate-400 mt-1 block">
+                      فاصلهٔ پایش پرواز (در حالت قطار+پرواز، دورهٔ کلی از بیشینهٔ این مقدار و فاصلهٔ قطار محاسبه می‌شود).
+                    </span>
                   </div>
+                </div>
+                )}
 
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                   <div>
                     <label className="block text-xs font-semibold text-slate-400 mb-2">حالت شبیه‌ساز (توصیه شده در هاست خارجی)</label>
                     <div className="flex items-center gap-3 h-10 mt-1">
@@ -634,11 +790,12 @@ export default function App() {
                             : 'bg-slate-800 text-slate-400 border-transparent'
                         }`}
                       >
-                        {config.useSimulationMode ? 'فعال (شبیه‌سازی پرواز)' : 'غیرفعال (رصد واقعی سایت‌ها)'}
+                        {config.useSimulationMode ? 'فعال (شبیه‌سازی)' : 'غیرفعال (رصد واقعی)'}
                       </button>
                     </div>
                   </div>
 
+                  {(config.transportMode === 'flight' || config.transportMode === 'both') && (
                   <div className="md:col-span-2 border-t border-slate-800/40 pt-4 mt-2">
                     <label className="block text-xs font-semibold text-slate-400 mb-2">آدرس پروکسی ایران (پروکسی HTTP یا SOCKS5)</label>
                     <input
@@ -652,8 +809,10 @@ export default function App() {
                       جهت دور زدن مسدودیت آی‌پی‌های خارج از کشور توسط ایرلاین‌ها، می‌توانید یک پروکسی ایران (در قالب آدرس بالا) تنظیم نمایید تا تمام وب‌اسکرپینگ پروازها از این طریق فرستاده شود.
                     </span>
                   </div>
+                  )}
                 </div>
 
+                {(config.transportMode === 'flight' || config.transportMode === 'both') && (
                 <div className="bg-slate-950/40 p-4 border border-slate-800/80 rounded-xl text-xs text-slate-400 mb-6 leading-relaxed flex items-start gap-2.5">
                   <Info className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
                   <div>
@@ -663,8 +822,10 @@ export default function App() {
                     ما <b className="text-amber-400">سیستم شبیه‌ساز هوشمند</b> را توسعه دادیم تا بتوانید به صورت ۱۰۰٪ ایمن و روان، کارکرد ربات و اتصال بله را تست کنید. شبیه‌ساز به صورت دوره‌ای صندلی‌هایی را باز می‌کند تا پیام‌های بله را به گوشی شما روانه کند!
                   </div>
                 </div>
+                )}
 
                 {/* Airlines selection */}
+                {(config.transportMode === 'flight' || config.transportMode === 'both') && (
                 <div className="border-t border-slate-800/80 pt-6">
                   <div className="flex items-center justify-between mb-4">
                     <h4 className="font-bold text-sm text-slate-300">انتخاب شرکت‌های هواپیمایی جهت پایش:</h4>
@@ -714,6 +875,7 @@ export default function App() {
                     })}
                   </div>
                 </div>
+                )}
 
                 <div className="border-t border-slate-800/80 pt-6 mt-6 flex justify-between items-center gap-4">
                   <button

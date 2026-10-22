@@ -11,6 +11,10 @@ export interface AirlineConfig {
   systemType: 'nira' | 'sepehran' | 'mahan' | 'iranair' | 'iranairtour' | 'ata' | 'pars' | 'unknown';
 }
 
+export type TransportMode = 'flight' | 'train' | 'both';
+
+export type TrainQuota = 'general' | 'men' | 'women' | 'car';
+
 export interface AppConfig {
   origin: string;
   destination: string;
@@ -24,6 +28,18 @@ export interface AppConfig {
   useSimulationMode: boolean;
   proxyUrl: string;
   enabledAirlines: string[]; // List of airline IDs
+  /** flight = فقط پرواز، train = فقط قطار، both = هر دو (با فاصلهٔ امن بین درخواست‌ها) */
+  transportMode: TransportMode;
+  trainOriginStationId: number;
+  trainDestinationStationId: number;
+  trainRouteSlug: string;
+  trainQuota: TrainQuota;
+  /** فاصلهٔ پایش قطار؛ حداقل ۳ دقیقه در سرور */
+  trainCheckIntervalMinutes: number;
+  /** منبع دادهٔ قطار؛ both = نوبتی (هر دور یکی) برای کم کردن فشار */
+  trainProvider: 'mrbilit' | 'flytoday' | 'both' | 'ghasedak';
+  /** در صورت خطا یا بلاک منبع اصلی، همان تاریخ از قاصدک۲۴ هم چک شود */
+  trainFallbackToGhasedak: boolean;
 }
 
 export interface FlightInfo {

@@ -14,6 +14,23 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ALL_AIRLINES, getAirlineUrl } from './src/airlinesData.js';
 import { AppConfig, FlightInfo, ScrapeLogEntry, ServerStatus } from './src/types.js';
 import { getJalaliFromGregorianString } from './src/dateUtils.js';
+import {
+  TRAIN_MIN_CHECK_INTERVAL_MINUTES,
+  buildMrBilitTrainUrl,
+  fetchTrainAvailability,
+  getTrainBackoffMs,
+  resolveTrainRouteSlug,
+  type TrainClassOffer,
+} from './src/trainMonitor.js';
+import {
+  fetchFlytodayAvailability,
+  fetchFlytodayCalendar,
+  getFlytodayBackoffMs,
+} from './src/flytodayTrainMonitor.js';
+import {
+  fetchGhasedakAvailability,
+  getGhasedakBackoffMs,
+} from './src/ghasedakTrainMonitor.js';
 import puppeteer from 'puppeteer';
 
 dotenv.config();
@@ -124,6 +141,14 @@ const DEFAULT_CONFIG: AppConfig = {
   useSimulationMode: false,
   proxyUrl: 'https://208.ir/ali/p.php?token=MySecretToken123&url=',
   enabledAirlines: ['zagros', 'qeshm', 'kish', 'sepehran', 'aseman'],
+  transportMode: 'train',
+  trainOriginStationId: 1,
+  trainDestinationStationId: 191,
+  trainRouteSlug: 'tehran-mashhad',
+  trainQuota: 'general',
+  trainCheckIntervalMinutes: 5,
+  trainProvider: 'mrbilit',
+  trainFallbackToGhasedak: true,
 };
 
 // Load or initialize config
@@ -131,13 +156,14 @@ let config: AppConfig = { ...DEFAULT_CONFIG };
 try {
   if (fs.existsSync(CONFIG_FILE)) {
     const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
-    config = { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
+    config = normalizeConfig({ ...DEFAULT_CONFIG, ...JSON.parse(raw) });
   } else {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
   }
 } catch (err) {
   console.error('Failed to load config, using defaults:', err);
 }
+config = normalizeConfig(config);
 
 // In-Memory Stats & Logs
 let checkCount = 0;
@@ -145,11 +171,17 @@ let alertsSentCount = 0;
 let lastCheckTime: string | null = null;
 let nextCheckTime: string | null = null;
 let scrapeLogs: ScrapeLogEntry[] = [];
-let monitoringInterval: NodeJS.Timeout | null = null;
+let monitoringTimeout: NodeJS.Timeout | null = null;
+let monitoringCycleInFlight = false;
+let lastTrainCheckAt = 0;
+let trainBackoffUntil = 0;
+let trainPollCounter = 0;
 
 // Track already notified flight identifiers to prevent spamming the user
 // Format: "airlineId-flightNo-departureTime-seatsCount"
 const notifiedFlights = new Set<string>();
+/** کلاس+تاریخ؛ فقط هنگام بازگشت ظرفیت بعد از تکمیل دوباره هشدار */
+const trainOfferWasAvailable = new Map<string, boolean>();
 
 function addLog(airlineId: string, airlineName: string, success: boolean, message: string, flightsFound: number, details?: string) {
   const log: ScrapeLogEntry = {
@@ -215,16 +247,338 @@ function formatBaleMessage(flight: FlightInfo, link: string): string {
 🔔 <i>بلیط‌یاب</i>`;
 }
 
-// The core scraping checker logic
-async function runFlightChecks() {
+function formatBaleTrainMessage(offer: TrainClassOffer): string {
+  const dateShamsi = getJalaliFromGregorianString(offer.dateGregorian);
+  return `🚆 <b>ظرفیت قطار ${offer.originName} به ${offer.destinationName} باز شد!</b>
+
+🏢 <b>شرکت:</b> ${offer.company}
+🔢 <b>شماره قطار:</b> ${offer.trainNumber}
+🛏 <b>واگن:</b> ${offer.wagonName}${offer.compartmentType ? ` (${offer.compartmentType})` : ''}
+⏰ <b>حرکت:</b> ${offer.departureTime} — <b>رسیدن:</b> ${offer.arrivalTime}
+📅 <b>تاریخ:</b> ${dateShamsi} (${offer.dateGregorian})
+💺 <b>صندلی خالی:</b> ${offer.capacity}
+💰 <b>قیمت (تومان):</b> ${offer.priceToman.toLocaleString('fa-IR')}
+
+🔗 <a href="${offer.buyLink}">رزرو در مستربلیط</a>
+
+🔔 <i>بلیط‌یاب</i>`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function modeIncludesFlight(mode: AppConfig['transportMode']): boolean {
+  return mode === 'flight' || mode === 'both';
+}
+
+function modeIncludesTrain(mode: AppConfig['transportMode']): boolean {
+  return mode === 'train' || mode === 'both';
+}
+
+function includesFlightMonitoring(): boolean {
+  return modeIncludesFlight(config.transportMode);
+}
+
+function includesTrainMonitoring(): boolean {
+  return modeIncludesTrain(config.transportMode);
+}
+
+function getEffectiveTrainIntervalMinutes(): number {
+  return Math.max(TRAIN_MIN_CHECK_INTERVAL_MINUTES, config.trainCheckIntervalMinutes || TRAIN_MIN_CHECK_INTERVAL_MINUTES);
+}
+
+function getSchedulerIntervalMinutes(): number {
+  const flightInterval = config.checkIntervalMinutes || 1;
+  const trainInterval = getEffectiveTrainIntervalMinutes();
+  if (config.transportMode === 'train') return trainInterval;
+  if (config.transportMode === 'flight') return flightInterval;
+  return Math.max(flightInterval, trainInterval);
+}
+
+function scheduleNextMonitoringRun(): void {
+  if (!config.isMonitoring) {
+    nextCheckTime = null;
+    return;
+  }
+  const baseMs = getSchedulerIntervalMinutes() * 60 * 1000;
+  const jitterMs = Math.floor(Math.random() * 90_000);
+  const nextAt = Date.now() + baseMs + jitterMs;
+  nextCheckTime = new Date(nextAt).toISOString();
+
+  if (monitoringTimeout) clearTimeout(monitoringTimeout);
+  monitoringTimeout = setTimeout(() => {
+    void runMonitoringCycle();
+  }, baseMs + jitterMs);
+}
+
+async function runMonitoringCycle(): Promise<void> {
+  if (!config.isMonitoring) {
+    nextCheckTime = null;
+    return;
+  }
+  if (monitoringCycleInFlight) {
+    return;
+  }
+  monitoringCycleInFlight = true;
   checkCount++;
   lastCheckTime = new Date().toISOString();
-  
-  // Calculate next check time
-  const next = new Date();
-  next.setMinutes(next.getMinutes() + config.checkIntervalMinutes);
-  nextCheckTime = next.toISOString();
 
+  try {
+    if (includesTrainMonitoring()) {
+      const trainGapMs = getEffectiveTrainIntervalMinutes() * 60 * 1000;
+      if (Date.now() >= trainBackoffUntil && Date.now() - lastTrainCheckAt >= trainGapMs) {
+        await runTrainChecks();
+        lastTrainCheckAt = Date.now();
+      }
+      if (includesFlightMonitoring()) {
+        await sleep(4000 + Math.floor(Math.random() * 3000));
+      }
+    }
+    if (includesFlightMonitoring()) {
+      await runFlightChecks();
+    }
+  } finally {
+    monitoringCycleInFlight = false;
+    scheduleNextMonitoringRun();
+  }
+}
+
+async function runTrainChecks(): Promise<void> {
+  const datesToCheck =
+    config.departureDates && config.departureDates.length > 0
+      ? config.departureDates
+      : [config.departureDateGregorian];
+
+  const routeSlug =
+    config.trainRouteSlug ||
+    resolveTrainRouteSlug(config.trainOriginStationId, config.trainDestinationStationId);
+
+  trainPollCounter++;
+  const provider = pickTrainProviderForCycle();
+  const providerLabel =
+    provider === 'mrbilit'
+      ? 'مستربلیط'
+      : provider === 'flytoday'
+        ? 'فلای‌تودی'
+        : 'قاصدک';
+  let flytodayCalendar: Map<string, boolean> | null = null;
+  if (provider === 'flytoday' && !config.useSimulationMode) {
+    const days = await fetchFlytodayCalendar(config.trainOriginStationId, config.trainDestinationStationId);
+    flytodayCalendar = new Map(days.map((d) => [d.date, d.soldOut]));
+    if (days.length > 0) {
+      addLog(
+        'train',
+        'فلای‌تودی',
+        true,
+        `تقویم ${days.length} روزه در یک درخواست دریافت شد.`,
+        0,
+        JSON.stringify(days.slice(0, 12), null, 2)
+      );
+    }
+  }
+
+  for (let i = 0; i < datesToCheck.length; i++) {
+    const dateGregorian = datesToCheck[i];
+    const dateShamsi = getJalaliFromGregorianString(dateGregorian);
+
+    if (i > 0) {
+      await sleep(2500 + Math.floor(Math.random() * 3500));
+    }
+
+    if (config.useSimulationMode) {
+      const roll = Math.random();
+      if (roll < 0.15) {
+        const seats = Math.floor(Math.random() * 4) + config.minSeatsRequired;
+        const offer: TrainClassOffer = {
+          classId: Math.floor(Math.random() * 1_000_000),
+          trainNumber: 300 + Math.floor(Math.random() * 50),
+          company: 'رجا (شبیه‌سازی)',
+          wagonName: 'پنج ستاره زندگی',
+          compartmentType: 'کوپه ۴ نفره',
+          departureTime: '21:00',
+          arrivalTime: '07:30',
+          dateGregorian,
+          originName: 'تهران',
+          destinationName: 'مشهد',
+          capacity: seats,
+          priceToman: 900_000 + Math.floor(Math.random() * 200_000),
+          bookable: true,
+          buyLink: buildMrBilitTrainUrl(routeSlug, dateGregorian),
+        };
+        await processTrainOffers([offer], dateGregorian, dateShamsi);
+        addLog('train', 'قطار', true, `[${dateShamsi}] شبیه‌سازی: ظرفیت قطار باز شد (${seats} صندلی)`, 1);
+      } else {
+        addLog('train', 'قطار', true, `[${dateShamsi}] شبیه‌سازی: ظرفیت باز نیست.`, 0);
+      }
+      continue;
+    }
+
+    const calendarSoldOut =
+      flytodayCalendar?.get(dateGregorian) === true;
+    if (calendarSoldOut === true) {
+      addLog('train', providerLabel, true, `[${dateShamsi}] تقویم: ظرفیت این روز پر است (جستجوی جزئی رد شد).`, 0);
+      continue;
+    }
+
+    let result = await fetchTrainFromProvider(provider, routeSlug, dateGregorian);
+    let activeLabel = providerLabel;
+    let triedGhasedakFallback = false;
+
+    const useGhasedakFallback =
+      config.trainFallbackToGhasedak !== false && provider !== 'ghasedak';
+    if (useGhasedakFallback && (!result.success || result.shouldBackoff)) {
+      addLog(
+        'train',
+        'قاصدک',
+        true,
+        `[${dateShamsi}] منبع «${providerLabel}» در دسترس نبود؛ بررسی پشتیبان قاصدک…`,
+        0
+      );
+      triedGhasedakFallback = true;
+      const fallback = await fetchGhasedakAvailability({
+        originStationId: config.trainOriginStationId,
+        destinationStationId: config.trainDestinationStationId,
+        dateGregorian,
+        quota: config.trainQuota || 'general',
+        routeSlug,
+      });
+      if (fallback.success) {
+        result = fallback;
+        activeLabel = 'قاصدک (پشتیبان)';
+      } else if (!result.success) {
+        result = fallback;
+        activeLabel = 'قاصدک';
+      }
+    }
+
+    if (!result.success) {
+      addLog('train', activeLabel, false, `[${dateShamsi}] ${result.message}`, 0);
+      if (result.shouldBackoff) {
+        const backoff = trainBackoffMsForFailure(provider, triedGhasedakFallback && activeLabel.includes('قاصدک'));
+        if (backoff > 0) {
+          trainBackoffUntil = Date.now() + backoff;
+          addLog(
+            'train',
+            activeLabel,
+            true,
+            `⏳ فاصلهٔ پایش تا ${Math.ceil(backoff / 60_000)} دقیقه افزایش یافت.`,
+            0
+          );
+        }
+      }
+      continue;
+    }
+
+    const matched = result.offers.filter((o) => o.capacity >= config.minSeatsRequired);
+    addLog(
+      'train',
+      activeLabel,
+      true,
+      `[${dateShamsi}] ${result.offers.length} کلاس باز — ${matched.length} مورد با حداقل ${config.minSeatsRequired} صندلی`,
+      matched.length,
+      matched.length > 0 ? JSON.stringify(matched.slice(0, 8), null, 2) : undefined
+    );
+    await processTrainOffers(matched, dateGregorian, dateShamsi);
+  }
+}
+
+function trainDedupeKey(offer: TrainClassOffer, dateGregorian: string): string {
+  return `${offer.trainNumber}-${dateGregorian}-${offer.wagonName}`;
+}
+
+async function processTrainOffers(
+  offers: TrainClassOffer[],
+  dateGregorian: string,
+  dateShamsi: string
+): Promise<void> {
+  const seenThisRound = new Set<string>();
+
+  for (const offer of offers) {
+    const stateKey = trainDedupeKey(offer, dateGregorian);
+    seenThisRound.add(stateKey);
+    const wasAvailable = trainOfferWasAvailable.get(stateKey) === true;
+    trainOfferWasAvailable.set(stateKey, true);
+
+    if (wasAvailable) continue;
+
+    const msg = formatBaleTrainMessage(offer);
+    const notifyRes = await sendBaleMessage(config.baleToken, config.baleChatId, msg);
+    if (notifyRes.success) {
+      alertsSentCount++;
+      addLog(
+        'train',
+        offer.company,
+        true,
+        `🔔 [${dateShamsi}] هشدار قطار به بله ارسال شد (قطار ${offer.trainNumber})`,
+        1,
+        `${offer.wagonName} — ${offer.capacity} صندلی`
+      );
+    } else {
+      addLog('train', offer.company, false, `❌ خطا در ارسال بله: ${notifyRes.message}`, 1);
+    }
+    await sleep(800);
+  }
+
+  for (const [key, was] of [...trainOfferWasAvailable.entries()]) {
+    if (!key.includes(`-${dateGregorian}-`)) continue;
+    if (was && !seenThisRound.has(key)) {
+      trainOfferWasAvailable.set(key, false);
+    }
+  }
+}
+
+type TrainProviderId = 'mrbilit' | 'flytoday' | 'ghasedak';
+
+function pickTrainProviderForCycle(): TrainProviderId {
+  if (config.trainProvider === 'mrbilit') return 'mrbilit';
+  if (config.trainProvider === 'flytoday') return 'flytoday';
+  if (config.trainProvider === 'ghasedak') return 'ghasedak';
+  return trainPollCounter % 2 === 0 ? 'mrbilit' : 'flytoday';
+}
+
+function trainBackoffMsForFailure(provider: TrainProviderId, ghasedakWasLastResort: boolean): number {
+  if (ghasedakWasLastResort) return getGhasedakBackoffMs();
+  if (provider === 'flytoday') return getFlytodayBackoffMs();
+  if (provider === 'ghasedak') return getGhasedakBackoffMs();
+  return getTrainBackoffMs();
+}
+
+async function fetchTrainFromProvider(
+  provider: TrainProviderId,
+  routeSlug: string,
+  dateGregorian: string
+) {
+  if (provider === 'ghasedak') {
+    return fetchGhasedakAvailability({
+      originStationId: config.trainOriginStationId,
+      destinationStationId: config.trainDestinationStationId,
+      dateGregorian,
+      quota: config.trainQuota || 'general',
+      routeSlug,
+    });
+  }
+  if (provider === 'flytoday') {
+    return fetchFlytodayAvailability({
+      originStationId: config.trainOriginStationId,
+      destinationStationId: config.trainDestinationStationId,
+      dateGregorian,
+      quota: config.trainQuota || 'general',
+      routeSlug,
+    });
+  }
+  return fetchTrainAvailability({
+    originStationId: config.trainOriginStationId,
+    destinationStationId: config.trainDestinationStationId,
+    dateGregorian,
+    quota: config.trainQuota || 'general',
+    routeSlug,
+    checkIndex: trainPollCounter,
+  });
+}
+
+// The core scraping checker logic
+async function runFlightChecks() {
   const activeAirlines = ALL_AIRLINES.filter((a) => config.enabledAirlines.includes(a.id));
   if (activeAirlines.length === 0) {
     addLog('system', 'سیستم', true, 'هیچ ایرلاینی برای بررسی فعال نیست.', 0);
@@ -701,23 +1055,33 @@ async function runFlightChecks() {
   }
 }
 
-// Manage interval
+function normalizeConfig(input: AppConfig): AppConfig {
+  const merged = { ...DEFAULT_CONFIG, ...input };
+  merged.trainCheckIntervalMinutes = Math.max(
+    TRAIN_MIN_CHECK_INTERVAL_MINUTES,
+    merged.trainCheckIntervalMinutes || TRAIN_MIN_CHECK_INTERVAL_MINUTES
+  );
+  if (!merged.trainRouteSlug) {
+    merged.trainRouteSlug = resolveTrainRouteSlug(merged.trainOriginStationId, merged.trainDestinationStationId);
+  }
+  if (merged.transportMode === 'train' && merged.checkIntervalMinutes < TRAIN_MIN_CHECK_INTERVAL_MINUTES) {
+    merged.checkIntervalMinutes = TRAIN_MIN_CHECK_INTERVAL_MINUTES;
+  }
+  if (merged.trainFallbackToGhasedak === undefined) {
+    merged.trainFallbackToGhasedak = true;
+  }
+  return merged;
+}
+
+// Manage interval (با jitter و بدون هم‌پوشانی درخواست‌ها)
 function restartMonitoring() {
-  if (monitoringInterval) {
-    clearInterval(monitoringInterval);
-    monitoringInterval = null;
+  if (monitoringTimeout) {
+    clearTimeout(monitoringTimeout);
+    monitoringTimeout = null;
   }
 
   if (config.isMonitoring) {
-    // Run immediately on start
-    runFlightChecks();
-
-    const ms = config.checkIntervalMinutes * 60 * 1000;
-    monitoringInterval = setInterval(runFlightChecks, ms);
-
-    const next = new Date();
-    next.setMilliseconds(next.getMilliseconds() + ms);
-    nextCheckTime = next.toISOString();
+    void runMonitoringCycle();
   } else {
     nextCheckTime = null;
   }
@@ -749,16 +1113,25 @@ app.get('/api/config', (req, res) => {
 // Update Configuration
 app.post('/api/config', (req, res) => {
   try {
-    const newConfig: AppConfig = req.body;
-    
-    // Basic validation
-    if (!newConfig.origin || !newConfig.destination || (!newConfig.departureDateGregorian && (!newConfig.departureDates || newConfig.departureDates.length === 0))) {
-      return res.status(400).json({ error: 'Origin, Destination, and Departure Date are required.' });
+    const newConfig = normalizeConfig(req.body as AppConfig);
+
+    if (!newConfig.departureDateGregorian && (!newConfig.departureDates || newConfig.departureDates.length === 0)) {
+      return res.status(400).json({ error: 'حداقل یک تاریخ پایش الزامی است.' });
+    }
+    if (modeIncludesFlight(newConfig.transportMode) && (!newConfig.origin || !newConfig.destination)) {
+      return res.status(400).json({ error: 'برای پایش پرواز، مبدا و مقصد الزامی است.' });
+    }
+    if (modeIncludesTrain(newConfig.transportMode) && (!newConfig.trainOriginStationId || !newConfig.trainDestinationStationId)) {
+      return res.status(400).json({ error: 'برای پایش قطار، شناسه ایستگاه مبدا و مقصد الزامی است.' });
     }
 
-    const intervalChanged = config.checkIntervalMinutes !== newConfig.checkIntervalMinutes || config.isMonitoring !== newConfig.isMonitoring;
+    const intervalChanged =
+      config.checkIntervalMinutes !== newConfig.checkIntervalMinutes ||
+      config.trainCheckIntervalMinutes !== newConfig.trainCheckIntervalMinutes ||
+      config.transportMode !== newConfig.transportMode ||
+      config.isMonitoring !== newConfig.isMonitoring;
 
-    config = { ...config, ...newConfig };
+    config = newConfig;
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 
     if (intervalChanged) {
@@ -774,7 +1147,10 @@ app.post('/api/config', (req, res) => {
 // Trigger Manual Immediate Check
 app.post('/api/trigger-check', async (req, res) => {
   try {
-    await runFlightChecks();
+    if (monitoringCycleInFlight) {
+      return res.status(409).json({ error: 'یک دور پایش در حال اجراست؛ لطفاً چند لحظه بعد دوباره تلاش کنید.' });
+    }
+    await runMonitoringCycle();
     res.json({ success: true, message: 'Check triggered successfully' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
