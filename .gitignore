@@ -10,3 +10,5 @@ coverage/
 php-host-mrbilit/config.php
 php-host-mrbilit/data/state.json
 php-host-mrbilit/data/run.log
+php-host-mrbilit/data.zip
+php-host-mrbilit/php-host-mrbilit.zip

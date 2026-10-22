@@ -11,7 +11,7 @@
 3. در `config.php` مقدار دهید:
    - `departure_dates` — تاریخ حرکت **میلادی** (`2026-11-15`)
    - `bale_token` و `bale_chat_id`
-   - در صورت نیاز `min_seats` و `quota`
+   - در صورت نیاز `min_seats`، `max_price_toman` (۰ = بدون سقف) و `quota`
 4. مطمئن شوید PHP 8.1+ و `allow_url_fopen=On` (یا curl فعال) برای درخواست HTTPS باشد.
 
 ## cron هر ۱ دقیقه
@@ -51,3 +51,35 @@ php cron.php
 یا با مرورگر (بعد از تنظیم `cron_secret`):
 
 `cron.php?key=...`
+
+خروجی نمونه: `done offers=12 alerts=0 dedupe_skipped=0`
+
+- **offers=0** یعنی API مستربلیط کلاس قابل‌خرید برنگردانده (یا خطا — `data/run.log` را ببینید).
+- **alerts=0** با **offers>0** یعنی یا قبلاً همان واگن را اعلام کرده‌اید (`dedupe_skipped`) یا بله خطا داده.
+- تاریخ در `config.php` حتماً **میلادی** باشد (`2026-10-30`)، نه شمسی (`1405-08-08`).
+
+### عیب‌یابی در مرورگر
+
+```text
+cron.php?key=رمز&debug=1
+```
+
+جزئیات JSON (تعداد قطار API، نمونه واگن‌ها، لینک مستربلیط).
+
+برای پاک کردن dedupe و تست دوبارهٔ هشدار:
+
+```text
+cron.php?key=رمز&reset=1
+```
+
+(فقط state را پاک می‌کند؛ برای ارسال دوباره بعدش یک بار بدون reset اجرا کنید.)
+
+### تست بله (بدون مستربلیط)
+
+```text
+cron.php?key=رمز&test_bale=1
+```
+
+خروجی JSON: `ok: true` یعنی پیام تست به بله رسید. اگر `اتصال به tapi.bale.ai ناموفق` دیدید، در `config.php` بگذارید `'bale_verify_ssl' => false` یا با هاستینگ دربارهٔ خروجی HTTPS به `tapi.bale.ai` صحبت کنید.
+
+در `run.log` خط `BALE ERROR` حالا **دلیل دقیق** (HTTP و متن API بله) را نشان می‌دهد.

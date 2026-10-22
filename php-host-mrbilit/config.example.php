@@ -9,20 +9,26 @@ return [
     'destination_station_id' => 191,
     'route_slug' => 'tehran-mashhad',
 
-    // تاریخ حرکت میلادی (Y-m-d) — می‌توانید چند تاریخ بدهید
+    // تاریخ حرکت میلادی (Y-m-d) — نه شمسی! مثلاً 2026-10-30 (معادل 1405/08/08)
     'departure_dates' => [
-        '2026-11-15',
+        '2026-10-30',
     ],
 
     // حداقل صندلی خالی برای ارسال هشدار
     'min_seats' => 1,
 
+    // حداکثر قیمت هر بلیت (تومان) — ۰ یعنی بدون سقف
+    'max_price_toman' => 0,
+
     // سهمیه: general | men | women | car
     'quota' => 'general',
 
-    // بله — از @BaleBot توکن و chat_id عددی
+    // بله — توکن ربات (بدون پیشوند bot) و chat_id کاربر (از getUpdates بعد از /start؛ نه آیدی ربات)
     'bale_token' => '',
     'bale_chat_id' => '',
+
+    // اگر خطای SSL/اتصال به tapi.bale.ai دارید، false کنید (هاست‌های ایرانی گاهاً CA ندارند)
+    'bale_verify_ssl' => true,
 
     /**
      * اگر cron از مرورگر/URL فراخوانی می‌شود، یک رمز طولانی بگذارید:

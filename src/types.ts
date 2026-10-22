@@ -40,6 +40,8 @@ export interface AppConfig {
   trainProvider: 'mrbilit' | 'flytoday' | 'both' | 'ghasedak';
   /** در صورت خطا یا بلاک منبع اصلی، همان تاریخ از قاصدک۲۴ هم چک شود */
   trainFallbackToGhasedak: boolean;
+  /** حداکثر قیمت بلیت قطار (تومان) برای هشدار؛ ۰ = بدون سقف */
+  trainMaxPriceToman: number;
 }
 
 export interface FlightInfo {

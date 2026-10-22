@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/Jalali.php';
+require_once __DIR__ . '/HttpClient.php';
 
 final class MrBilitClient
 {
@@ -17,7 +18,14 @@ final class MrBilitClient
     ];
 
     /**
-     * @return array{ok: bool, message: string, offers: list<array<string, mixed>>}
+     * @return array{
+     *   ok: bool,
+     *   message: string,
+     *   offers: list<array<string, mixed>>,
+     *   http_status?: int,
+     *   train_rows?: int,
+     *   api_error?: string|null
+     * }
      */
     public static function fetchAvailability(
         int $fromId,
@@ -25,7 +33,7 @@ final class MrBilitClient
         string $dateGregorian,
         string $routeSlug,
         string $quota = 'general',
-        bool $disableCache = false
+        bool $disableCache = true
     ): array {
         $gender = self::QUOTA_CODES[$quota] ?? self::QUOTA_CODES['general'];
         $query = http_build_query([
@@ -42,43 +50,64 @@ final class MrBilitClient
         ]);
 
         $url = self::API_BASE . '/api/GetAvailable/v2?' . $query;
-        $ctx = stream_context_create([
-            'http' => [
-                'method' => 'GET',
-                'timeout' => 25,
-                'header' => implode("\r\n", [
-                    'Accept: application/json, text/plain, */*',
-                    'Accept-Language: fa-IR,fa;q=0.9',
-                    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                    'Origin: https://mrbilit.com',
-                    'Referer: https://mrbilit.com/',
-                ]),
-            ],
-            'ssl' => [
-                'verify_peer' => true,
-                'verify_peer_name' => true,
-            ],
-        ]);
+        $headers = [
+            'Accept: application/json, text/plain, */*',
+            'Accept-Language: fa-IR,fa;q=0.9',
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Origin: https://mrbilit.com',
+            'Referer: https://mrbilit.com/',
+        ];
 
-        $raw = @file_get_contents($url, false, $ctx);
-        $status = 0;
-        if (isset($http_response_header[0]) && preg_match('/\d{3}/', $http_response_header[0], $m)) {
-            $status = (int) $m[0];
-        }
+        $res = HttpClient::get($url, $headers);
+        $status = $res['status'];
+        $raw = $res['body'];
 
         if ($raw === false) {
-            return ['ok' => false, 'message' => 'خطا در اتصال به مستربلیط', 'offers' => []];
-        }
-        if ($status === 403 || $status === 429) {
-            return ['ok' => false, 'message' => "محدودیت دسترسی ($status)", 'offers' => []];
-        }
-        if ($status !== 200) {
-            return ['ok' => false, 'message' => "پاسخ HTTP $status", 'offers' => []];
+            return [
+                'ok' => false,
+                'message' => 'خطا در اتصال به مستربلیط' . ($res['error'] ? ' (' . $res['error'] . ')' : ''),
+                'offers' => [],
+                'http_status' => $status,
+            ];
         }
 
         $body = json_decode($raw, true);
         if (!is_array($body)) {
-            return ['ok' => false, 'message' => 'JSON نامعتبر', 'offers' => []];
+            return [
+                'ok' => false,
+                'message' => 'JSON نامعتبر از مستربلیط',
+                'offers' => [],
+                'http_status' => $status,
+            ];
+        }
+
+        $apiError = isset($body['Error']) ? (string) $body['Error'] : null;
+        if ($apiError !== null && $apiError !== '') {
+            return [
+                'ok' => false,
+                'message' => 'مستربلیط: ' . $apiError,
+                'offers' => [],
+                'http_status' => $status,
+                'api_error' => $apiError,
+                'train_rows' => 0,
+            ];
+        }
+
+        if ($status === 403 || $status === 429) {
+            return [
+                'ok' => false,
+                'message' => "محدودیت دسترسی ($status)",
+                'offers' => [],
+                'http_status' => $status,
+            ];
+        }
+        if ($status !== 200) {
+            return [
+                'ok' => false,
+                'message' => "پاسخ HTTP $status",
+                'offers' => [],
+                'http_status' => $status,
+            ];
         }
 
         $buyLink = self::buildTrainUrl($routeSlug, $dateGregorian);
@@ -114,12 +143,11 @@ final class MrBilitClient
                     if (!is_array($c)) {
                         continue;
                     }
-                    $capacity = (int) ($c['capacity'] ?? 0);
-                    $priceRaw = (int) ($c['price'] ?? 0);
-                    $bookable = !empty($c['isAvailable']) && $priceRaw > 0 && $capacity > 0;
-                    if (!$bookable) {
+                    if (!self::isClassBookable($c)) {
                         continue;
                     }
+                    $capacity = (int) ($c['capacity'] ?? 0);
+                    $priceRaw = (int) ($c['price'] ?? 0);
                     $offers[] = [
                         'train_number' => $trainNumber,
                         'company' => $company,
@@ -140,9 +168,36 @@ final class MrBilitClient
 
         return [
             'ok' => true,
-            'message' => count($offers) . ' کلاس باز',
+            'message' => count($offers) . ' کلاس باز (از ' . count($trains) . ' قطار در پاسخ API)',
             'offers' => $offers,
+            'http_status' => 200,
+            'train_rows' => count($trains),
+            'api_error' => null,
         ];
+    }
+
+    /**
+     * همان منطق فرانت مستربلیط: isAvailable + price؛ ظرفیت صفر را رد می‌کنیم.
+     *
+     * @param array<string, mixed> $c
+     */
+    private static function isClassBookable(array $c): bool
+    {
+        $priceRaw = (int) ($c['price'] ?? 0);
+        if ($priceRaw <= 0) {
+            return false;
+        }
+        $available = $c['isAvailable'] ?? null;
+        if ($available === false || $available === 0 || $available === '0' || $available === 'false') {
+            return false;
+        }
+        if ($available === true || $available === 1 || $available === '1' || $available === 'true') {
+            $capacity = (int) ($c['capacity'] ?? 0);
+            return $capacity > 0;
+        }
+        // اگر isAvailable نیامده ولی قیمت و ظرفیت هست
+        $capacity = (int) ($c['capacity'] ?? 0);
+        return $capacity > 0;
     }
 
     public static function buildTrainUrl(string $routeSlug, string $dateGregorian): string

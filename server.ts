@@ -149,6 +149,7 @@ const DEFAULT_CONFIG: AppConfig = {
   trainCheckIntervalMinutes: 5,
   trainProvider: 'mrbilit',
   trainFallbackToGhasedak: true,
+  trainMaxPriceToman: 0,
 };
 
 // Load or initialize config
@@ -470,17 +471,26 @@ async function runTrainChecks(): Promise<void> {
       continue;
     }
 
-    const matched = result.offers.filter((o) => o.capacity >= config.minSeatsRequired);
+    const matched = filterTrainOffersForAlert(result.offers);
+    const priceHint =
+      config.trainMaxPriceToman > 0 ? `، حداکثر ${config.trainMaxPriceToman.toLocaleString('fa-IR')} تومان` : '';
     addLog(
       'train',
       activeLabel,
       true,
-      `[${dateShamsi}] ${result.offers.length} کلاس باز — ${matched.length} مورد با حداقل ${config.minSeatsRequired} صندلی`,
+      `[${dateShamsi}] ${result.offers.length} کلاس باز — ${matched.length} مورد با حداقل ${config.minSeatsRequired} صندلی${priceHint}`,
       matched.length,
       matched.length > 0 ? JSON.stringify(matched.slice(0, 8), null, 2) : undefined
     );
     await processTrainOffers(matched, dateGregorian, dateShamsi);
   }
+}
+
+function filterTrainOffersForAlert(offers: TrainClassOffer[]): TrainClassOffer[] {
+  const maxPrice = config.trainMaxPriceToman > 0 ? config.trainMaxPriceToman : Number.POSITIVE_INFINITY;
+  return offers.filter(
+    (o) => o.capacity >= config.minSeatsRequired && o.priceToman > 0 && o.priceToman <= maxPrice
+  );
 }
 
 function trainDedupeKey(offer: TrainClassOffer, dateGregorian: string): string {
@@ -1069,6 +1079,9 @@ function normalizeConfig(input: AppConfig): AppConfig {
   }
   if (merged.trainFallbackToGhasedak === undefined) {
     merged.trainFallbackToGhasedak = true;
+  }
+  if (merged.trainMaxPriceToman === undefined || merged.trainMaxPriceToman < 0) {
+    merged.trainMaxPriceToman = 0;
   }
   return merged;
 }

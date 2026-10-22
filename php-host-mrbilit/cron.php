@@ -26,9 +26,37 @@ if (!$isCli) {
     }
 }
 
+$debug = !$isCli && isset($_GET['debug']) && (string) $_GET['debug'] === '1';
+$resetState = !$isCli && isset($_GET['reset']) && (string) $_GET['reset'] === '1';
+$testBale = !$isCli && isset($_GET['test_bale']) && (string) $_GET['test_bale'] === '1';
+
 require_once __DIR__ . '/lib/MrBilitClient.php';
 require_once __DIR__ . '/lib/BaleNotifier.php';
 require_once __DIR__ . '/lib/StateStore.php';
+
+$baleVerifySsl = !isset($config['bale_verify_ssl']) || $config['bale_verify_ssl'] !== false;
+
+if ($testBale) {
+    header('Content-Type: application/json; charset=utf-8');
+    $test = BaleNotifier::sendTest(
+        (string) ($config['bale_token'] ?? ''),
+        (string) ($config['bale_chat_id'] ?? ''),
+        $baleVerifySsl
+    );
+    if (!$test['ok'] && $baleVerifySsl) {
+        $retry = BaleNotifier::sendTest(
+            (string) ($config['bale_token'] ?? ''),
+            (string) ($config['bale_chat_id'] ?? ''),
+            false
+        );
+        $test = [
+            'ok' => $retry['ok'],
+            'message' => $test['message'] . ' | retry_ssl_off: ' . $retry['message'],
+        ];
+    }
+    echo json_encode($test, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    exit;
+}
 
 $logFile = __DIR__ . '/data/run.log';
 function monitor_log(string $logFile, string $line): void
@@ -44,6 +72,7 @@ $fromId = (int) ($config['origin_station_id'] ?? 1);
 $toId = (int) ($config['destination_station_id'] ?? 191);
 $routeSlug = (string) ($config['route_slug'] ?? 'tehran-mashhad');
 $minSeats = max(1, (int) ($config['min_seats'] ?? 1));
+$maxPriceToman = max(0, (int) ($config['max_price_toman'] ?? 0));
 $quota = (string) ($config['quota'] ?? 'general');
 $dates = $config['departure_dates'] ?? [];
 if (!is_array($dates) || count($dates) === 0) {
@@ -51,10 +80,22 @@ if (!is_array($dates) || count($dates) === 0) {
     exit(1);
 }
 
-$state = new StateStore((string) ($config['state_file'] ?? __DIR__ . '/data/state.json'));
-$disableCache = (time() % 240) < 60;
+$statePath = (string) ($config['state_file'] ?? __DIR__ . '/data/state.json');
+if ($resetState && is_file($statePath)) {
+    unlink($statePath);
+}
+
+$state = new StateStore($statePath);
 
 $alerts = 0;
+$totalOffers = 0;
+$skippedDedupe = 0;
+$skippedMinSeats = 0;
+$skippedMaxPrice = 0;
+$baleBroken = false;
+/** @var list<array<string, mixed>> $debugRows */
+$debugRows = [];
+
 foreach ($dates as $dateGregorian) {
     $dateGregorian = trim((string) $dateGregorian);
     if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateGregorian)) {
@@ -62,28 +103,57 @@ foreach ($dates as $dateGregorian) {
         continue;
     }
 
+    $jalaliHint = jalali_from_gregorian_string($dateGregorian);
     $result = MrBilitClient::fetchAvailability(
         $fromId,
         $toId,
         $dateGregorian,
         $routeSlug,
         $quota,
-        $disableCache
+        true
     );
 
     if (!$result['ok']) {
-        monitor_log($logFile, "[$dateGregorian] " . $result['message']);
+        $line = "[$dateGregorian / $jalaliHint] " . $result['message'];
+        monitor_log($logFile, $line);
+        if ($debug) {
+            $debugRows[] = [
+                'date_gregorian' => $dateGregorian,
+                'date_jalali' => $jalaliHint,
+                'api_ok' => false,
+                'message' => $result['message'],
+                'http_status' => $result['http_status'] ?? null,
+            ];
+        }
         continue;
     }
+
+    $offerCount = count($result['offers']);
+    $totalOffers += $offerCount;
+    monitor_log(
+        $logFile,
+        "[$dateGregorian / $jalaliHint] {$result['message']} (min_seats=$minSeats, max_price_toman=$maxPriceToman)"
+    );
 
     $seenKeys = [];
     foreach ($result['offers'] as $offer) {
         if ((int) $offer['capacity'] < $minSeats) {
+            $skippedMinSeats++;
+            continue;
+        }
+        $priceToman = (int) ($offer['price_toman'] ?? 0);
+        if ($maxPriceToman > 0 && ($priceToman <= 0 || $priceToman > $maxPriceToman)) {
+            $skippedMaxPrice++;
             continue;
         }
         $key = $state->dedupeKey($offer, $dateGregorian);
         $seenKeys[] = $key;
         if ($state->wasAlreadyNotified($key)) {
+            $skippedDedupe++;
+            continue;
+        }
+
+        if ($baleBroken) {
             continue;
         }
 
@@ -91,24 +161,63 @@ foreach ($dates as $dateGregorian) {
         $sent = BaleNotifier::send(
             (string) ($config['bale_token'] ?? ''),
             (string) ($config['bale_chat_id'] ?? ''),
-            $msg
+            $msg,
+            $offer,
+            $baleVerifySsl
         );
         if ($sent['ok']) {
             $state->markAvailable($key);
             $alerts++;
             monitor_log($logFile, "ALERT [$dateGregorian] train {$offer['train_number']} {$offer['wagon_name']}");
         } else {
+            $baleBroken = true;
             monitor_log($logFile, 'BALE ERROR: ' . $sent['message']);
         }
     }
 
     $state->markUnavailableForDate($dateGregorian, $seenKeys);
+
+    if ($debug) {
+        $debugRows[] = [
+            'date_gregorian' => $dateGregorian,
+            'date_jalali' => $jalaliHint,
+            'api_ok' => true,
+            'train_rows' => $result['train_rows'] ?? null,
+            'bookable_offers' => $offerCount,
+            'mrbilit_link' => MrBilitClient::buildTrainUrl($routeSlug, $dateGregorian),
+            'sample_offers' => array_slice($result['offers'], 0, 3),
+        ];
+    }
 }
 
 $state->save();
-monitor_log($logFile, 'OK offers checked, alerts=' . $alerts);
+monitor_log(
+    $logFile,
+    "OK offers=$totalOffers alerts=$alerts dedupe_skipped=$skippedDedupe min_seats_skipped=$skippedMinSeats max_price_skipped=$skippedMaxPrice"
+);
+
+if ($debug) {
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(
+        [
+            'offers' => $totalOffers,
+            'alerts' => $alerts,
+            'dedupe_skipped' => $skippedDedupe,
+            'min_seats_skipped' => $skippedMinSeats,
+            'max_price_skipped' => $skippedMaxPrice,
+            'max_price_toman' => $maxPriceToman,
+            'hint' => 'تاریخ در config باید میلادی Y-m-d باشد (مثلاً 2026-10-30 نه 1405-08-08).',
+            'dates' => $debugRows,
+        ],
+        JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT
+    );
+    exit;
+}
 
 if (!$isCli) {
     header('Content-Type: text/plain; charset=utf-8');
-    echo "done alerts=$alerts\n";
+    echo "done offers=$totalOffers alerts=$alerts dedupe_skipped=$skippedDedupe max_price_skipped=$skippedMaxPrice\n";
+    if ($totalOffers === 0) {
+        echo "tip: برای جزئیات ?debug=1 همان key را بزنید؛ لاگ: data/run.log\n";
+    }
 }
