@@ -1,0 +1,13 @@
+# جلوگیری از دانلود مستقیم تنظیمات و وضعیت
+<Files "config.php">
+    Require all denied
+</Files>
+<FilesMatch "^(state\.json|run\.log)$">
+    Require all denied
+</FilesMatch>
+
+# پوشه data از وب بسته باشد (اگر document root بالاتر است)
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^data/ - [F,L]
+</IfModule>
